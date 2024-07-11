@@ -179,9 +179,18 @@ func (es *encodingSupport) UseEncoding(encoding string) {
 	es.decoder = mahonia.NewDecoder(encoding)
 }
 
+func (es *encodingSupport) GetEncoding() string {
+	return es.textEncoding
+}
+
 // imageCache keeps a dbase table in memory as its byte array encoding
 type imageCache struct {
 	dataStore []byte
+}
+
+// AddEOFMarker add eof to the end of table file
+func (dt *DbfTable) AddEOFMarker() {
+	dt.dataStore = append(dt.dataStore, dt.eofMarker)
 }
 
 // AddFieldAs add field to dst like another from src
@@ -224,32 +233,21 @@ func (dt *DbfTable) AddFloatField(fieldName string, length byte, decimalPlaces u
 	return dt.addField(fieldName, Float, length, decimalPlaces)
 }
 
-func (dt *DbfTable) addField(fieldName string, fieldType DbaseDataType, length byte, decimalPlaces uint8) (err error) {
-	if dt.schemaLocked {
-		return errors.New("once you start entering data to the dbase table or open an existing dbase file, altering dbase table schema is not allowed")
-	}
-
-	normalizedFieldName := dt.normaliseFieldName(fieldName)
-
-	if dt.HasField(normalizedFieldName) {
-		return errors.New("Field name \"" + normalizedFieldName + "\" already exists")
-	}
-
+func (dt *DbfTable) CreateField(fieldName string, fieldType DbaseDataType, length byte, decimalPlaces uint8) FieldDescriptor {
 	df := new(FieldDescriptor)
-	df.name = normalizedFieldName
+	df.name = fieldName
 	df.fieldType = fieldType
 	df.length = length
 	df.decimalPlaces = decimalPlaces
 
 	slice := dt.convertToByteSlice(df.name, fieldNameByteLength)
-
 	// Field name in ASCII (max 10 chracters)
-	for i := 0; i < len(slice); i++ {
-		df.fieldStore[i] = slice[i]
-	}
+	// for i := 0; i < len(slice); i++ {
+	// 	df.fieldStore[i] = slice[i]
+	// }
+	copy(df.fieldStore[:], slice)
 
 	df.fieldStore[fieldNameByteLength] = endOfFieldNameMarker
-
 	// Set field's data type
 	// C (Character)  All OEM code page characters.
 	// D (Date)     Numbers and a character to separate month, day, and year (stored internally as 8 digits in YYYYMMDD format).
@@ -264,16 +262,116 @@ func (dt *DbfTable) addField(fieldName string, fieldType DbaseDataType, length b
 	// number of decimal places
 	// Applicable only to number/float
 	df.fieldStore[17] = df.decimalPlaces
+	return *df
+}
 
-	//fmt.Printf("addField | append:%v\n", df)
+func (dt *DbfTable) addField(fieldName string, fieldType DbaseDataType, length byte, decimalPlaces uint8) (err error) {
+	if dt.schemaLocked {
+		return errors.New("once you start entering data to the dbase table or open an existing dbase file, altering dbase table schema is not allowed")
+	}
 
-	dt.fields = append(dt.fields, *df)
+	normalizedFieldName := dt.normaliseFieldName(fieldName)
+
+	if dt.HasField(normalizedFieldName) {
+		return errors.New("Field name \"" + normalizedFieldName + "\" already exists")
+	}
+
+	df := dt.CreateField(normalizedFieldName, fieldType, length, decimalPlaces)
+	dt.fields = append(dt.fields, df)
 
 	// if createdFromScratch we need to update dbase header to reflect the changes we have made
 	if dt.createdFromScratch {
-		dt.updateHeader()
+		dt.UpdateHeader()
 	}
 
+	return
+}
+
+// AddNewField add an new field to a exist dbf file
+func (dt *DbfTable) AddNewField(fieldName string, fieldType DbaseDataType, length byte, decimalPlaces uint8) (err error) {
+	if dt.schemaLocked {
+		return errors.New("once you start entering data to the dbase table or open an existing dbase file, altering dbase table schema is not allowed")
+	}
+	normalizedFieldName := dt.normaliseFieldName(fieldName)
+	if dt.HasField(normalizedFieldName) {
+		return errors.New("new field name \"" + normalizedFieldName + "\" already exists")
+	}
+
+	err = dt.addField(fieldName, fieldType, length, decimalPlaces)
+	if err != nil {
+		return
+	}
+
+	dt.UpdateHeader()
+
+	// no records as yet
+	dt.AddEOFMarker()
+	return
+}
+
+func (dt *DbfTable) AlterField(fieldName string, fieldNewName string, fieldType DbaseDataType, length byte, decimalPlaces uint8) (err error) {
+	if dt.schemaLocked {
+		return errors.New("once you start entering data to the dbase table or open an existing dbase file, altering dbase table schema is not allowed")
+	}
+
+	if fieldNewName == "" {
+		fieldNewName = fieldName
+	}
+	normalizedFieldName := dt.normaliseFieldName(fieldName)
+	normalizedFieldNewName := dt.normaliseFieldName(fieldNewName)
+
+	if !dt.HasField(normalizedFieldName) {
+		return errors.New("field name \"" + normalizedFieldName + "\" is not exist")
+	}
+
+	if normalizedFieldNewName != normalizedFieldName && dt.HasField(normalizedFieldNewName) {
+		return errors.New("new field name \"" + normalizedFieldNewName + "\" already exists")
+	}
+
+	idx, err := dt.FieldIndex(fieldName)
+	if err != nil {
+		return
+	}
+
+	if length == byte(0) {
+		length = dt.fields[idx].length
+	}
+	if fieldType == DbaseDataType(0) {
+		fieldType = dt.fields[idx].fieldType
+	}
+	if decimalPlaces == byte(0) {
+		decimalPlaces = dt.fields[idx].decimalPlaces
+	}
+
+	dt.fields[idx] = dt.CreateField(normalizedFieldNewName, fieldType, length, decimalPlaces)
+	dt.UpdateHeader()
+
+	// no records as yet
+	dt.AddEOFMarker()
+	return
+}
+func (dt *DbfTable) DeleteField(fieldName string) (err error) {
+	if dt.schemaLocked {
+		return errors.New("once you start entering data to the dbase table or open an existing dbase file, altering dbase table schema is not allowed")
+	}
+
+	normalizedFieldName := dt.normaliseFieldName(fieldName)
+
+	if !dt.HasField(normalizedFieldName) {
+		return errors.New("Field name \"" + normalizedFieldName + "\" is not exist")
+	}
+
+	idx, err := dt.FieldIndex(fieldName)
+
+	if err != nil {
+		return
+	}
+
+	dt.fields = append(dt.fields[:idx], dt.fields[idx+1:]...)
+	dt.UpdateHeader()
+
+	// no records as yet
+	dt.AddEOFMarker()
 	return
 }
 
@@ -308,7 +406,7 @@ func (dt *DbfTable) convertToByteSlice(value string, numberOfBytes int) (s []byt
 	return
 }
 
-func (dt *DbfTable) updateHeader() {
+func (dt *DbfTable) UpdateHeader() {
 	// first create a slice from initial 32 bytes of datastore as the foundation of the new slice
 	// later we will set this slice to dt.dataStore to create the new header slice
 	slice := dt.dataStore[0:32]
@@ -332,9 +430,17 @@ func (dt *DbfTable) updateHeader() {
 	// now reset dt.dataStore slice with the updated one
 	dt.dataStore = slice
 
+	// update number of records to 0
+	dt.numberOfRecords = uint32(0)
+	s := uint32ToBytes(dt.numberOfRecords)
+	dt.dataStore[4] = s[0]
+	dt.dataStore[5] = s[1]
+	dt.dataStore[6] = s[2]
+	dt.dataStore[7] = s[3]
+
 	// update the number of bytes in dbase file header
 	dt.numberOfBytesInHeader = uint16(len(slice))
-	s := uint32ToBytes(uint32(dt.numberOfBytesInHeader))
+	s = uint32ToBytes(uint32(dt.numberOfBytesInHeader))
 	dt.dataStore[8] = s[0]
 	dt.dataStore[9] = s[1]
 
@@ -634,6 +740,15 @@ func (dt *DbfTable) Data() []byte {
 
 func (dt *DbfTable) Dbase() []byte {
 	return append(dt.dataStore, 0x1A)
+}
+
+// Copy return a new table that with schema unlocked
+func (dt *DbfTable) Copy() *DbfTable {
+	newDataSource := make([]byte, len(dt.dataStore))
+	copy(newDataSource[:], dt.dataStore[:])
+	newTable, _ := NewFromByteArray(newDataSource, dt.textEncoding)
+	newTable.schemaLocked = false
+	return newTable
 }
 
 // func formatValue(f FieldDescriptor, value string) string {

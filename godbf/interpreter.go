@@ -183,9 +183,10 @@ func New(encoding string) (table *DbfTable) {
 		dt.dataStore[29] = 0x57 // ANSI
 	}
 
-	dt.updateHeader()
+	dt.UpdateHeader()
+
 	// no records as yet
-	dt.dataStore = append(dt.dataStore, dt.eofMarker)
+	dt.AddEOFMarker()
 
 	return dt
 }
