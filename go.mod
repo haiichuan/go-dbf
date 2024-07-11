@@ -1,4 +1,4 @@
-module github.com/LindsayBradford/go-dbf
+module github.com/haiichuan/go-dbf
 
 // 	To sync the vendor directory, run:  go mod vendor from the directory housing this file.
 
@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	github.com/YouEclipse/how-to-release-go-module v1.0.0 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	golang.org/x/net v0.8.0 // indirect
 	golang.org/x/text v0.8.0 // indirect
