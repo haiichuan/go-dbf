@@ -127,6 +127,10 @@ func lockSchema(dt *DbfTable) {
 	dt.schemaLocked = true // Schema changes no longer permitted
 }
 
+func unlockSchema(dt *DbfTable) {
+	dt.schemaLocked = false // Schema changes permitted
+}
+
 // New creates a new dbase table from scratch for the given character encoding
 func New(encoding string) (table *DbfTable) {
 	dt := new(DbfTable)

@@ -2,10 +2,12 @@ package godbf
 
 import (
 	"errors"
-	"github.com/axgle/mahonia"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/axgle/mahonia"
 )
 
 const (
@@ -182,6 +184,26 @@ type imageCache struct {
 	dataStore []byte
 }
 
+// AddFieldAs add field to dst like another from src
+func (dt *DbfTable) AddFieldAs(src *FieldDescriptor, name string) (err error) {
+	switch src.FieldType() {
+	case Character:
+		err = dt.AddTextField(name, src.Length())
+	case Date:
+		err = dt.AddDateField(name)
+	case Float:
+		err = dt.AddFloatField(name, src.Length(), src.DecimalPlaces())
+	case Logical:
+		err = dt.AddBooleanField(name)
+	case Numeric:
+		err = dt.AddNumberField(name, src.Length(), src.DecimalPlaces())
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (dt *DbfTable) AddBooleanField(fieldName string) (err error) {
 	return dt.addField(fieldName, Logical, Logical.fixedFieldLength(), Logical.decimalCountNotApplicable())
 }
@@ -204,7 +226,7 @@ func (dt *DbfTable) AddFloatField(fieldName string, length byte, decimalPlaces u
 
 func (dt *DbfTable) addField(fieldName string, fieldType DbaseDataType, length byte, decimalPlaces uint8) (err error) {
 	if dt.schemaLocked {
-		return errors.New("Once you start entering data to the dbase table or open an existing dbase file, altering dbase table schema is not allowed!")
+		return errors.New("once you start entering data to the dbase table or open an existing dbase file, altering dbase table schema is not allowed")
 	}
 
 	normalizedFieldName := dt.normaliseFieldName(fieldName)
@@ -270,9 +292,9 @@ func (dt *DbfTable) normaliseFieldName(name string) (s string) {
 }
 
 /*
-  getByteSlice converts value to byte slice according to given encoding and return
-  a slice that is fixedFieldLength equals to numberOfBytes or less if the string is shorter than
-  numberOfBytes
+getByteSlice converts value to byte slice according to given encoding and return
+a slice that is fixedFieldLength equals to numberOfBytes or less if the string is shorter than
+numberOfBytes
 */
 func (dt *DbfTable) convertToByteSlice(value string, numberOfBytes int) (s []byte) {
 	e := mahonia.NewEncoder(dt.textEncoding)
@@ -331,6 +353,18 @@ func (dt *DbfTable) Fields() []FieldDescriptor {
 	return dt.fields
 }
 
+// FieldByName return the field descriptor of the table
+func (dt *DbfTable) FieldByName(fieldName string) FieldDescriptor {
+
+	for i := 0; i < len(dt.fields); i++ {
+		if dt.fields[i].name == fieldName {
+			return dt.fields[i]
+		}
+	}
+
+	return FieldDescriptor{}
+}
+
 // FieldNames return the names of fields in the table as a slice
 func (dt *DbfTable) FieldNames() []string {
 	names := make([]string, 0)
@@ -340,6 +374,18 @@ func (dt *DbfTable) FieldNames() []string {
 	}
 
 	return names
+}
+
+// FieldIdx returns field index if the table has a field with the given name
+// If the field does not exist an error is returned.
+func (dt *DbfTable) FieldIndex(fieldName string) (int, error) {
+
+	for i := 0; i < len(dt.fields); i++ {
+		if dt.fields[i].name == fieldName {
+			return i, nil
+		}
+	}
+	return -1, errors.New("Field name \"" + fieldName + "\" not exists!")
 }
 
 // HasField returns true if the table has a field with the given name
@@ -376,8 +422,7 @@ func (dt *DbfTable) AddNewRecord() (newRecordNumber int, addErr error) {
 	if dt.lengthOfEachRecord <= 1 {
 		return -1, errors.New("attempted to add record with no fields defined")
 	}
-
-	dt.schemaLocked = true
+	lockSchema(dt)
 
 	newRecord := make([]byte, dt.lengthOfEachRecord)
 	newRecord[recordDeletionFlagIndex] = recordIsActive
@@ -400,7 +445,12 @@ func (dt *DbfTable) AddNewRecord() (newRecordNumber int, addErr error) {
 }
 
 // NumberOfRecords returns the number of records in the table
-func (dt *DbfTable) NumberOfRecords() int {
+func (dt *DbfTable) NumberOfRecords() (ret int) {
+	defer func() {
+		if r := recover(); r != nil {
+			ret = 0
+		}
+	}()
 	return int(dt.numberOfRecords)
 }
 
@@ -423,22 +473,13 @@ func (dt *DbfTable) SetFieldValueByName(row int, fieldName string, value string)
 // SetFieldValue sets the value for the given row and field index as specified
 // If the field index is invalid, or the value is incompatible with the field's type, an error is returned.
 func (dt *DbfTable) SetFieldValue(row int, fieldIndex int, value string) (err error) {
-
 	b := []byte(dt.encoder.ConvertString(value))
-
 	fieldLength := int(dt.fields[fieldIndex].length)
 
-	//DEBUG
-
-	//fmt.Printf("dt.numberOfBytesInHeader=%v\n\n", dt.numberOfBytesInHeader)
-	//fmt.Printf("dt.lengthOfEachRecord=%v\n\n", dt.lengthOfEachRecord)
-
-	// locate the offset of the field in DbfTable dataStore
 	offset := int(dt.numberOfBytesInHeader)
 	lengthOfRecord := int(dt.lengthOfEachRecord)
 
 	offset = offset + (row * lengthOfRecord)
-
 	recordOffset := 1
 
 	for i := 0; i < len(dt.fields); i++ {
@@ -459,7 +500,6 @@ func (dt *DbfTable) SetFieldValue(row int, fieldIndex int, value string) (err er
 		}
 	case Float, Numeric:
 		for i := 0; i < fieldLength; i++ {
-			// fmt.Printf("i:%v\n", i)
 			if i < len(b) {
 				dt.dataStore[offset+recordOffset+(fieldLength-i-1)] = b[(len(b)-1)-i]
 			} else {
@@ -470,10 +510,6 @@ func (dt *DbfTable) SetFieldValue(row int, fieldIndex int, value string) (err er
 
 	return
 
-	//fmt.Printf("field value:%#v\n", []byte(value))
-	//fmt.Printf("field index:%#v\n", fieldIndex)
-	//fmt.Printf("field fixedFieldLength:%v\n", dt.Fields[fieldIndex].fixedFieldLength)
-	//fmt.Printf("string to byte:%#v\n", b)
 }
 
 func (dt *DbfTable) fillFieldWithBlanks(fieldLength int, offset int, recordOffset int) {
@@ -482,9 +518,12 @@ func (dt *DbfTable) fillFieldWithBlanks(fieldLength int, offset int, recordOffse
 	}
 }
 
-//FieldValue returns the content for the record at the given row and field index as a string
+// FieldValue returns the content for the record at the given row and field index as a string
 // If the row or field index is invalid, an error is returned .
 func (dt *DbfTable) FieldValue(row int, fieldIndex int) (value string) {
+	if fieldIndex == -1 {
+		return
+	}
 
 	offset := int(dt.numberOfBytesInHeader)
 	lengthOfRecord := int(dt.lengthOfEachRecord)
@@ -509,6 +548,7 @@ func (dt *DbfTable) FieldValue(row int, fieldIndex int) (value string) {
 	//fmt.Printf("utf-8 value:[%#v] original value:[%#v]\n", s, string(temp))
 
 	value = strings.TrimSpace(s)
+	// value = strings.TrimRight(s, " ")
 
 	//fmt.Printf("raw value:[%#v]\n", dt.dataStore[(offset + recordOffset):((offset + recordOffset) + int(dt.Fields[fieldIndex].fixedFieldLength))])
 	//fmt.Printf("utf-8 value:[%#v]\n", []byte(s))
@@ -540,6 +580,12 @@ func (dt *DbfTable) Int64FieldValueByName(row int, fieldName string) (value int6
 
 // FieldValueByName returns the value of a field given row number and name provided
 func (dt *DbfTable) FieldValueByName(row int, fieldName string) (value string, err error) {
+	defer func() {
+		if msg := recover(); msg != nil {
+			value = ""
+			err = fmt.Errorf("%v", msg)
+		}
+	}()
 	if fieldIndex, entryFound := dt.fieldMap[fieldName]; entryFound {
 		return dt.FieldValue(row, fieldIndex), err
 	}
@@ -547,17 +593,32 @@ func (dt *DbfTable) FieldValueByName(row int, fieldName string) (value string, e
 	return
 }
 
-//RowIsDeleted returns whether a row has marked as deleted
+// RowIsDeleted returns whether a row has marked as deleted
 func (dt *DbfTable) RowIsDeleted(row int) bool {
+	if row < 0 || row >= int(dt.NumberOfRecords()) {
+		return false
+	}
 	offset := int(dt.numberOfBytesInHeader)
 	lengthOfRecord := int(dt.lengthOfEachRecord)
 	offset = offset + (row * lengthOfRecord)
-	return dt.dataStore[offset:(offset + 1)][recordDeletionFlagIndex] == recordIsDeleted
+	if len(dt.dataStore) > (offset + 1) {
+		return dt.dataStore[offset:(offset + 1)][recordDeletionFlagIndex] == recordIsDeleted
+	}
+	return false
+}
+
+// DeleteRow delete a row with specified row index
+func (dt *DbfTable) DeleteRow(row int) error {
+	if row < 0 || row >= int(dt.NumberOfRecords()) {
+		return errors.New("out of range")
+	}
+	offset := int(dt.numberOfBytesInHeader) + (row * int(dt.lengthOfEachRecord))
+	dt.dataStore[offset:(offset + 1)][recordDeletionFlagIndex] = recordIsDeleted
+	return nil
 }
 
 // GetRowAsSlice return the record values for the row specified as a string slice
 func (dt *DbfTable) GetRowAsSlice(row int) []string {
-
 	s := make([]string, len(dt.Fields()))
 
 	for i := 0; i < len(dt.Fields()); i++ {
@@ -566,6 +627,50 @@ func (dt *DbfTable) GetRowAsSlice(row int) []string {
 
 	return s
 }
+
+func (dt *DbfTable) Data() []byte {
+	return dt.dataStore
+}
+
+func (dt *DbfTable) Dbase() []byte {
+	return append(dt.dataStore, 0x1A)
+}
+
+// func formatValue(f FieldDescriptor, value string) string {
+// 	left := func(str string, length int) string {
+// 		runes := []rune(str)
+// 		if len(runes) > length {
+// 			return string(runes[:length])
+// 		}
+// 		return str
+// 	}
+
+// 	if value != "" {
+// 		switch f.fieldType {
+// 		case 'C':
+// 			value = left(value, int(f.length))
+// 		case 'N':
+// 			if n, err := strconv.ParseFloat(value, 32); err == nil {
+// 				value = fmt.Sprintf("%."+strconv.Itoa(int(f.decimalPlaces))+"f", n)
+// 			}
+// 		case 'D':
+// 			switch f.format {
+// 			case "", "20060102":
+// 			case "RFC3339":
+// 				t, _ := time.Parse(time.RFC3339, value)
+// 				value = t.Format("20060102")
+// 			default:
+// 				t, _ := time.Parse(f.format, value)
+// 				value = t.Format("20060102")
+// 			}
+// 		}
+// 	}
+// 	return value
+// }
+
+// func (dt *DbfTable) FormatValue(fieldName, value string) string {
+// 	return formatValue(dt.FieldByName(fieldName), value)
+// }
 
 // Deprecated: Use SaveToFile() instead.
 func (dt *DbfTable) SaveFile(filename string) error {
