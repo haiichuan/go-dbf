@@ -7,8 +7,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
-
-	"golang.org/x/text/encoding/charmap"
 )
 
 // NewFromFile creates a DbfTable, reading it from a file with the given file name, expecting the supplied encoding.
@@ -66,8 +64,7 @@ func (dt *DbfTable) SaveCSV(filename string, delimiter rune, headers bool) (err 
 		}
 	}()
 
-	encoder := charmap.Windows1251.NewEncoder()
-	w := csv.NewWriter(encoder.Writer(f))
+	w := csv.NewWriter(f)
 	w.Comma = delimiter
 	if headers {
 		fields := dt.Fields()
